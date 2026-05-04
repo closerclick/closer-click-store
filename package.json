@@ -1,0 +1,36 @@
+{
+  "name": "@gatoseya/closer-click-store",
+  "version": "0.1.0",
+  "description": "Almacén compartido de hilos de mensajes para el ecosistema Closer Click (vault iframe + postMessage)",
+  "type": "module",
+  "main": "src/index.js",
+  "module": "src/index.js",
+  "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js"
+    }
+  },
+  "files": [
+    "src",
+    "store",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "closer-click",
+    "store",
+    "messaging",
+    "cross-app"
+  ],
+  "author": "seyacat",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seyacat/closer-click-store.git"
+  }
+}

@@ -1,0 +1,57 @@
+# @gatoseya/closer-click-store
+
+Almacén compartido de hilos de mensajes para el ecosistema [Closer Click](https://github.com/seyacat).
+
+Mismo patrón que [closer-click-identity](https://github.com/seyacat/closer-click-identity): un iframe oculto servido desde `store.closer.click` mantiene los datos en su propio `localStorage`. Cualquier app del ecosistema (web messenger, extensión Chrome, futura app móvil PWA) que cargue este iframe en el mismo navegador comparte los mismos hilos.
+
+## Por qué un subdominio aparte
+
+- Los mensajes son volumen mucho mayor que las claves/contactos. Mantenerlos fuera del vault de identidad evita saturar ese localStorage.
+- Cada origen tiene su propia cuota (~5-10 MB en navegadores típicos). Subdominios distintos = sumar cuotas.
+- Permite evolucionar el schema de mensajería sin tocar el de identidad (más estable).
+
+## API
+
+```js
+import { Store } from '@gatoseya/closer-click-store'
+
+const store = await Store.connect()  // singleton — carga el iframe oculto
+
+// El threadKey lo decide la app (típicamente la pubkey del contacto)
+await store.appendMessage(contactPubkey, {
+  dir: 'out',
+  text: 'hola',
+  ts: Date.now()
+  // id se autogenera si no lo pasas
+})
+
+const entries = await store.listThread(contactPubkey, { limit: 50 })
+
+const summaries = await store.getThreadSummaries()
+// → { [pubkey]: { lastEntry, count } }   para sidebar de conversaciones
+
+await store.removeThread(contactPubkey)
+await store.clearAll()                    // borrar todo el almacén
+
+const stats = await store.getStats()
+// → { totalBytes, threadCount, threads: { [k]: { count, bytes } } }
+```
+
+## Garantías
+
+- **Per-thread cap**: 1000 mensajes por defecto, configurable con `setMaxPerThread(n)`. El más antiguo se descarta al añadir uno nuevo si pasa el cap.
+- **Eviction global ante `QuotaExceededError`**: el iframe descarta el 20% más antiguo a través de todos los hilos y reintenta hasta 8 veces.
+- **No sale del navegador**: nunca se hace fetch, no hay servidor, no hay analytics.
+
+## Deploy
+
+GitHub Actions despliega a `store.closer.click` cuando cambia algo en `store/`. El bundle del iframe es estático (HTML + JS, sin build).
+
+## Schema en localStorage
+
+```
+key: cc.store.threads.v1
+value: JSON { [threadKey: string]: ThreadEntry[] }
+```
+
+Las entradas son objetos opacos para el store; solo se les pide `id` y `ts` para deduplicación y ordenamiento.
