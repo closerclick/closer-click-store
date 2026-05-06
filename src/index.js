@@ -56,7 +56,9 @@ export class Store {
           clearTimeout(pending.timer)
           if (msg.error) pending.reject(new Error(msg.error))
           else pending.resolve(msg.result)
+          return
         }
+        if (msg.type === 'event') this._emit(msg.event, msg.payload)
       }
       window.addEventListener('message', this._handler)
       document.body.appendChild(iframe)
@@ -108,4 +110,28 @@ export class Store {
   clearAll () { return this._call('clearAll') }
 
   getStats () { return this._call('getStats') }
+
+  // ----- export / import -----
+  exportThreads () { return this._call('exportThreads') }
+  importThreads (threads, mode = 'merge') { return this._call('importThreads', { threads, mode }) }
+
+  // ----- Drive sync -----
+  syncConnect (clientId) { return this._call('syncConnect', { clientId }) }
+  syncDisconnect () { return this._call('syncDisconnect') }
+  syncUnlock (passphrase) { return this._call('syncUnlock', { passphrase }) }
+  syncLock () { return this._call('syncLock') }
+  syncStatus () { return this._call('syncStatus') }
+  syncNow () { return this._call('syncNow') }
+
+  on (event, handler) {
+    if (!this._listeners) this._listeners = new Map()
+    if (!this._listeners.has(event)) this._listeners.set(event, new Set())
+    this._listeners.get(event).add(handler)
+    return () => this._listeners.get(event)?.delete(handler)
+  }
+  onSync (handler) { return this.on('sync', handler) }
+  _emit (event, payload) {
+    const set = this._listeners?.get(event); if (!set) return
+    for (const h of set) { try { h(payload) } catch (e) { console.error(e) } }
+  }
 }

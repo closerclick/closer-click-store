@@ -44,4 +44,32 @@ export class Store {
   removeMessage (threadKey: string, id: string): Promise<{ removed: number }>
   clearAll (): Promise<{ ok: true }>
   getStats (): Promise<StoreStats>
+  exportThreads (): Promise<{ threads: Record<string, ThreadEntry[]> }>
+  importThreads (
+    threads: Record<string, ThreadEntry[]>,
+    mode?: 'merge' | 'replace'
+  ): Promise<{ mode: string; count: number }>
+  syncConnect (clientId: string): Promise<{ accessToken: string; expiresAt: number }>
+  syncDisconnect (): Promise<void>
+  syncUnlock (passphrase: string): Promise<{ ok: boolean }>
+  syncLock (): Promise<void>
+  syncStatus (): Promise<SyncStatus>
+  syncNow (): Promise<SyncStatus>
+  on (event: 'sync', handler: (event: SyncEvent) => void): () => void
+  onSync (handler: (event: SyncEvent) => void): () => void
+}
+
+export interface SyncStatus {
+  kind?: 'identity' | 'store'
+  connected: boolean
+  unlocked: boolean
+  dirty: boolean
+  lastError?: string | null
+}
+
+export interface SyncEvent {
+  kind: 'identity' | 'store'
+  status: 'connected' | 'disconnected' | 'unlocked' | 'locked' | 'syncing' | 'synced' | 'conflict' | 'offline' | 'error'
+  error?: string
+  ts: number
 }

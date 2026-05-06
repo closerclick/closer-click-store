@@ -11,9 +11,12 @@
 // contacto). Las entradas son objetos opacos para este store; solo se le
 // pide tener `id` y `ts` para deduplicación y sort.
 
+import { createSync } from './sync.js'
+
 const KEY = 'cc.store.threads.v1'
 const MAX_PER_THREAD_DEFAULT = 1000
 let maxPerThread = MAX_PER_THREAD_DEFAULT
+let sync = null
 
 // ----- helpers -----
 
@@ -41,15 +44,65 @@ function dropOldest (data, fraction = 0.2) {
   }
   return true
 }
-function persist (data) {
+function persist (data, { silent = false } = {}) {
   for (let attempt = 0; attempt < 8; attempt++) {
-    try { localStorage.setItem(KEY, JSON.stringify(data)); return true }
+    try {
+      localStorage.setItem(KEY, JSON.stringify(data))
+      if (!silent && sync) sync.markDirty()
+      return true
+    }
     catch (e) {
       if (!isQuotaError(e)) { console.warn('[store] persist failed:', e); return false }
       if (!dropOldest(data, 0.2)) { console.warn('[store] quota — nothing left to evict'); return false }
     }
   }
   console.warn('[store] persist gave up after 8 eviction rounds'); return false
+}
+
+// ----- merge for sync -----
+
+function mergeThreads (localThreads, remoteThreads) {
+  const out = { ...localThreads }
+  let changed = false
+  const allKeys = new Set([...Object.keys(localThreads || {}), ...Object.keys(remoteThreads || {})])
+  for (const k of allKeys) {
+    const a = localThreads[k] || []
+    const b = remoteThreads[k] || []
+    if (b.length === 0) continue
+    if (a.length === 0) { out[k] = [...b].sort((x, y) => (x.ts || 0) - (y.ts || 0)); changed = true; continue }
+    const byId = new Map()
+    for (const e of a) if (e?.id) byId.set(e.id, e)
+    let added = 0
+    for (const e of b) {
+      if (!e?.id) continue
+      const prev = byId.get(e.id)
+      if (!prev) { byId.set(e.id, e); added++ }
+      else if ((e.ts || 0) > (prev.ts || 0)) { byId.set(e.id, e); added++ }
+    }
+    if (added > 0) {
+      const merged = Array.from(byId.values()).sort((x, y) => (x.ts || 0) - (y.ts || 0))
+      if (merged.length > maxPerThread) merged.splice(0, merged.length - maxPerThread)
+      out[k] = merged
+      changed = true
+    }
+  }
+  return { merged: out, changed }
+}
+
+async function exportLocalForSync () {
+  return { threads: loadAll() }
+}
+
+async function applyMergedFromSync (mergedState) {
+  if (mergedState && mergedState.threads) {
+    persist(mergedState.threads, { silent: true })
+  }
+}
+
+async function mergeForSync (local, remote) {
+  if (!remote) return { merged: local, changed: false }
+  const { merged, changed } = mergeThreads(local.threads || {}, remote.threads || {})
+  return { merged: { threads: merged }, changed }
 }
 function trimThread (arr, cap) {
   if (arr.length > cap) arr.splice(0, arr.length - cap)
@@ -58,7 +111,38 @@ function trimThread (arr, cap) {
 // ----- handlers -----
 
 const handlers = {
-  async ping () { return { pong: true, version: '0.1.0' } },
+  async ping () { return { pong: true, version: '0.2.0' } },
+
+  // ----- export / import (used by sync, also exposed to apps) -----
+
+  async exportThreads () { return { threads: loadAll() } },
+  async importThreads ({ threads, mode = 'merge' }) {
+    if (!threads || typeof threads !== 'object') throw new Error('threads required')
+    if (mode === 'replace') { persist(threads); return { mode, count: Object.keys(threads).length } }
+    const local = loadAll()
+    const { merged } = mergeThreads(local, threads)
+    persist(merged)
+    return { mode, count: Object.keys(merged).length }
+  },
+
+  // ----- Drive sync -----
+
+  async syncConnect ({ clientId }) {
+    if (!sync) throw new Error('sync not ready')
+    return sync.connectGoogle(clientId)
+  },
+  async syncDisconnect () { if (sync) return sync.disconnectGoogle() },
+  async syncUnlock ({ passphrase }) {
+    if (!sync) throw new Error('sync not ready')
+    return sync.unlock(passphrase)
+  },
+  async syncLock () { if (sync) return sync.lock() },
+  async syncStatus () { return sync ? sync.getStatus() : { connected: false, unlocked: false, dirty: false } },
+  async syncNow () {
+    if (!sync) throw new Error('sync not ready')
+    await sync.pull(); await sync.push(); return sync.getStatus()
+  },
+
 
   async setMaxPerThread ({ max }) {
     maxPerThread = Math.max(1, Math.min(50000, Number(max) || MAX_PER_THREAD_DEFAULT))
@@ -152,6 +236,20 @@ const handlers = {
 }
 
 // ----- bootstrap -----
+
+sync = createSync({
+  fileName: 'closerclick-store-backup.json',
+  kind: 'store',
+  exportLocal: exportLocalForSync,
+  applyMerged: applyMergedFromSync,
+  mergeFn: mergeForSync
+})
+
+sync.onStatus((payload) => {
+  if (window.parent && window.parent !== window) {
+    try { window.parent.postMessage({ _ccs: true, type: 'event', event: 'sync', payload }, '*') } catch {}
+  }
+})
 
 window.addEventListener('message', async (event) => {
   const msg = event.data
