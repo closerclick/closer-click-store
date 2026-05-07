@@ -11,6 +11,38 @@
 // contacto). Las entradas son objetos opacos para este store; solo se le
 // pide tener `id` y `ts` para deduplicación y sort.
 
+// Polyfill de crypto.randomUUID: en contextos no seguros (p.ej. cuando este
+// iframe se carga desde una página padre HTTP o desde un contexto sin secure
+// context) `crypto.randomUUID` puede no existir aunque `crypto.subtle` sí.
+// Construimos un UUIDv4 con `getRandomValues`, que está disponible siempre.
+if (typeof crypto !== 'undefined' && typeof crypto.randomUUID !== 'function') {
+  crypto.randomUUID = function () {
+    const b = new Uint8Array(16)
+    crypto.getRandomValues(b)
+    b[6] = (b[6] & 0x0f) | 0x40
+    b[8] = (b[8] & 0x3f) | 0x80
+    const h = [...b].map(x => x.toString(16).padStart(2, '0')).join('')
+    return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`
+  }
+}
+
+// Diagnóstico: imprime contexto al arrancar para entender en qué condiciones
+// vive este iframe (secure context, top-level accessible, etc.).
+try {
+  let topOrigin = null
+  try { topOrigin = window.top.location.origin } catch (_) { topOrigin = '(cross-origin, blocked)' }
+  console.log('[cc-store] context', {
+    origin: location.origin,
+    href: location.href,
+    isSecureContext: window.isSecureContext,
+    inIframe: window !== window.top,
+    topOrigin,
+    cryptoRandomUUID: typeof crypto?.randomUUID === 'function',
+    cryptoSubtle: !!crypto?.subtle,
+    userAgent: navigator.userAgent
+  })
+} catch (e) { console.warn('[cc-store] context log failed', e) }
+
 import { createSync } from './sync.js'
 
 const KEY = 'cc.store.threads.v1'
