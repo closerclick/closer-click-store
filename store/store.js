@@ -45,23 +45,100 @@ try {
 
 import { createSync } from './sync.js'
 
-const KEY = 'cc.store.threads.v1'
+const KEY = 'cc.store.threads.v1'          // clave del localStorage VIEJO (migración)
+const IDB_NAME = 'cc-store'
+const IDB_STORE = 'kv'
+const IDB_KEY = 'threads.v1'
 const MAX_PER_THREAD_DEFAULT = 1000
 let maxPerThread = MAX_PER_THREAD_DEFAULT
 let sync = null
 
-// ----- helpers -----
+// ----- persistencia en IndexedDB -------------------------------------------
+//
+// Antes todo vivía en `localStorage` de este origen (~5 MB, compartido por todas
+// las apps del ecosistema, con evicción del más viejo al llenarse). Ahora el
+// backend es **IndexedDB**: cuota dinámica (cientos de MB–GB según disco), sin el
+// techo de 5 MB. Pedimos `navigator.storage.persist()` para que el almacenamiento
+// sea **no-evictable**. La API (postMessage) y el sync no cambian.
+//
+// Modelo: una copia en memoria (`state`) del mapa `{threadKey: ThreadEntry[]}`,
+// idéntico al esquema anterior, persistida como un único registro en IndexedDB.
 
-function loadAll () {
-  try { const raw = localStorage.getItem(KEY); return raw ? JSON.parse(raw) : {} }
-  catch { return {} }
-}
+let idb = null
+let state = {}            // copia de trabajo en memoria
+let usingFallback = false // true si IndexedDB no está disponible (→ localStorage)
+let initPromise = null
+
 function isQuotaError (e) {
   return e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014 || /quota/i.test(e.message || ''))
 }
 function bytesOfString (s) { return new Blob([s]).size }
+
+function openIdb () {
+  return new Promise((resolve, reject) => {
+    let req
+    try { req = indexedDB.open(IDB_NAME, 1) } catch (e) { reject(e); return }
+    req.onupgradeneeded = () => {
+      const db = req.result
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE)
+    }
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+function idbGet (db, key) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly')
+    const r = tx.objectStore(IDB_STORE).get(key)
+    r.onsuccess = () => resolve(r.result)
+    r.onerror = () => reject(r.error)
+  })
+}
+function idbSet (db, key, val) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite')
+    tx.objectStore(IDB_STORE).put(val, key)
+    tx.oncomplete = () => resolve(true)
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error)
+  })
+}
+
+// Inicializa el backend: abre IndexedDB, carga el estado y migra (una vez) los
+// datos del localStorage viejo si IndexedDB está vacío. Si IndexedDB no está
+// disponible (p.ej. modo privado), cae a localStorage para no perder función.
+async function init () {
+  try { if (navigator.storage?.persist) await navigator.storage.persist() } catch (_) { /* best-effort */ }
+  try {
+    idb = await openIdb()
+    const stored = await idbGet(idb, IDB_KEY)
+    if (stored && typeof stored === 'object') {
+      state = stored
+    } else {
+      // Migración one-time desde el localStorage anterior.
+      try {
+        const raw = localStorage.getItem(KEY)
+        if (raw) {
+          state = JSON.parse(raw) || {}
+          await idbSet(idb, IDB_KEY, state)
+          console.log('[cc-store] migrado localStorage → IndexedDB')
+        }
+      } catch (e) { console.warn('[cc-store] migración falló:', e); state = {} }
+    }
+  } catch (e) {
+    console.warn('[cc-store] IndexedDB no disponible, uso localStorage:', e)
+    usingFallback = true
+    idb = null
+    try { const raw = localStorage.getItem(KEY); state = raw ? JSON.parse(raw) : {} } catch { state = {} }
+  }
+}
+initPromise = init()
+
+function loadAll () { return state }
+
 function dropOldest (data, fraction = 0.2) {
-  // Aplana todas las entradas, ordena por ts asc, descarta los primeros N%
+  // Aplana todas las entradas, ordena por ts asc, descarta los primeros N%.
+  // Solo se usa como red de seguridad ante QuotaExceededError (muy raro en IDB).
   const flat = []
   for (const [k, arr] of Object.entries(data)) {
     for (const e of arr) flat.push({ k, ts: e.ts || 0, id: e.id })
@@ -76,19 +153,38 @@ function dropOldest (data, fraction = 0.2) {
   }
   return true
 }
-function persist (data, { silent = false } = {}) {
-  for (let attempt = 0; attempt < 8; attempt++) {
-    try {
-      localStorage.setItem(KEY, JSON.stringify(data))
-      if (!silent && sync) sync.markDirty()
-      return true
+
+// Escribe el estado al backend. Async (IndexedDB). Mantiene la red de evicción
+// solo si el backend devolviera QuotaExceededError.
+async function writeState () {
+  if (usingFallback || !idb) {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      try { localStorage.setItem(KEY, JSON.stringify(state)); return true }
+      catch (e) {
+        if (!isQuotaError(e)) { console.warn('[store] persist (ls) failed:', e); return false }
+        if (!dropOldest(state, 0.2)) { console.warn('[store] quota — nada que evictar'); return false }
+      }
     }
+    return false
+  }
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try { await idbSet(idb, IDB_KEY, state); return true }
     catch (e) {
-      if (!isQuotaError(e)) { console.warn('[store] persist failed:', e); return false }
-      if (!dropOldest(data, 0.2)) { console.warn('[store] quota — nothing left to evict'); return false }
+      if (!isQuotaError(e)) { console.warn('[store] persist (idb) failed:', e); return false }
+      if (!dropOldest(state, 0.2)) { console.warn('[store] quota — nada que evictar'); return false }
     }
   }
-  console.warn('[store] persist gave up after 8 eviction rounds'); return false
+  return false
+}
+
+// Reemplaza el estado y lo persiste. Async para garantizar durabilidad antes de
+// responder al llamador. `silent` evita marcar el sync como sucio (al aplicar
+// merges venidos del propio sync).
+async function persist (data, { silent = false } = {}) {
+  state = data
+  const ok = await writeState()
+  if (ok && !silent && sync) sync.markDirty()
+  return ok
 }
 
 // ----- merge for sync -----
@@ -127,7 +223,7 @@ async function exportLocalForSync () {
 
 async function applyMergedFromSync (mergedState) {
   if (mergedState && mergedState.threads) {
-    persist(mergedState.threads, { silent: true })
+    await persist(mergedState.threads, { silent: true })
   }
 }
 
@@ -143,17 +239,17 @@ function trimThread (arr, cap) {
 // ----- handlers -----
 
 const handlers = {
-  async ping () { return { pong: true, version: '0.2.0' } },
+  async ping () { return { pong: true, version: '0.3.0' } },
 
   // ----- export / import (used by sync, also exposed to apps) -----
 
   async exportThreads () { return { threads: loadAll() } },
   async importThreads ({ threads, mode = 'merge' }) {
     if (!threads || typeof threads !== 'object') throw new Error('threads required')
-    if (mode === 'replace') { persist(threads); return { mode, count: Object.keys(threads).length } }
+    if (mode === 'replace') { await persist(threads); return { mode, count: Object.keys(threads).length } }
     const local = loadAll()
     const { merged } = mergeThreads(local, threads)
-    persist(merged)
+    await persist(merged)
     return { mode, count: Object.keys(merged).length }
   },
 
@@ -193,7 +289,7 @@ const handlers = {
     if (existing >= 0) data[threadKey][existing] = { ...data[threadKey][existing], ...entry }
     else data[threadKey].push(entry)
     trimThread(data[threadKey], maxPerThread)
-    persist(data)
+    await persist(data)
     return entry
   },
 
@@ -231,7 +327,7 @@ const handlers = {
     const data = loadAll()
     const removed = data[threadKey]?.length || 0
     delete data[threadKey]
-    persist(data)
+    await persist(data)
     return { removed }
   },
 
@@ -242,20 +338,20 @@ const handlers = {
     const before = arr.length
     data[threadKey] = arr.filter(e => e.id !== id)
     if (data[threadKey].length === 0) delete data[threadKey]
-    persist(data)
+    await persist(data)
     return { removed: before - (data[threadKey]?.length || 0) }
   },
 
   async clearAll () {
-    localStorage.removeItem(KEY)
+    await persist({})
+    try { localStorage.removeItem(KEY) } catch (_) { /* */ }
     return { ok: true }
   },
 
   /** Tamaño total + por hilo. Útil para mostrar "uso de almacenamiento". */
   async getStats () {
-    const raw = localStorage.getItem(KEY) || ''
-    const totalBytes = bytesOfString(raw)
     const data = loadAll()
+    const totalBytes = bytesOfString(JSON.stringify(data))
     const threads = {}
     for (const [k, arr] of Object.entries(data)) {
       threads[k] = {
@@ -263,7 +359,20 @@ const handlers = {
         bytes: bytesOfString(JSON.stringify(arr))
       }
     }
-    return { totalBytes, threadCount: Object.keys(data).length, threads }
+    // Cuota real del origen (IndexedDB): `usage`/`quota` en bytes y si el
+    // almacenamiento es persistente (no-evictable). `backend` indica el motor.
+    let usage = null
+    let quota = null
+    let persisted = null
+    try {
+      if (navigator.storage?.estimate) { const est = await navigator.storage.estimate(); usage = est.usage ?? null; quota = est.quota ?? null }
+      if (navigator.storage?.persisted) persisted = await navigator.storage.persisted()
+    } catch (_) { /* best-effort */ }
+    return {
+      totalBytes, threadCount: Object.keys(data).length, threads,
+      backend: usingFallback ? 'localStorage' : 'indexeddb',
+      usage, quota, persisted
+    }
   }
 }
 
@@ -293,7 +402,10 @@ window.addEventListener('message', async (event) => {
   )
   const handler = handlers[method]
   if (!handler) return reply({ error: `Unknown method: ${method}` })
-  try { reply({ result: await handler(params || {}) }) }
+  try {
+    await initPromise            // backend (IndexedDB) listo antes de servir
+    reply({ result: await handler(params || {}) })
+  }
   catch (e) { reply({ error: e?.message || String(e) }) }
 })
 

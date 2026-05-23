@@ -2,12 +2,23 @@
 
 Almacén compartido de hilos de mensajes para el ecosistema [Closer Click](https://github.com/seyacat).
 
-Mismo patrón que [closer-click-identity](https://github.com/seyacat/closer-click-identity): un iframe oculto servido desde `store.closer.click` mantiene los datos en su propio `localStorage`. Cualquier app del ecosistema (web messenger, extensión Chrome, futura app móvil PWA) que cargue este iframe en el mismo navegador comparte los mismos hilos.
+Mismo patrón que [closer-click-identity](https://github.com/seyacat/closer-click-identity): un iframe oculto servido desde `store.closer.click` mantiene los datos en su propio almacenamiento. Cualquier app del ecosistema (web messenger, extensión Chrome, futura app móvil PWA) que cargue este iframe en el mismo navegador comparte los mismos hilos.
+
+## Almacenamiento: IndexedDB (desde v0.3.0)
+
+El backend del vault es **IndexedDB** (antes `localStorage`):
+
+- **Cuota grande y dinámica** según el disco (cientos de MB a GB), en vez del techo de ~5 MB de `localStorage`. Desaparece el riesgo de evicción del más viejo al llenarse el bucket compartido del origen.
+- Pide **`navigator.storage.persist()`** → almacenamiento **persistente / no-evictable** (best-effort).
+- **Migración automática** una sola vez: si hay datos en el `localStorage` anterior (`cc.store.threads.v1`), se copian a IndexedDB en el primer arranque.
+- Si IndexedDB no está disponible (p. ej. modo privado), cae a `localStorage` para no perder funcionalidad.
+- 100% local: no requiere cuenta ni terceros. (El **sync** opcional a tu Google Drive sigue aparte, cifrado y off por defecto.)
+- `getStats()` reporta `backend`, `usage`, `quota` y `persisted`.
 
 ## Por qué un subdominio aparte
 
-- Los mensajes son volumen mucho mayor que las claves/contactos. Mantenerlos fuera del vault de identidad evita saturar ese localStorage.
-- Cada origen tiene su propia cuota (~5-10 MB en navegadores típicos). Subdominios distintos = sumar cuotas.
+- Los mensajes son volumen mucho mayor que las claves/contactos. Mantenerlos fuera del vault de identidad evita saturar ese almacenamiento.
+- Cada origen tiene su propia cuota. Subdominios distintos = aislar y sumar cuotas.
 - Permite evolucionar el schema de mensajería sin tocar el de identidad (más estable).
 
 ## API
@@ -34,27 +45,37 @@ await store.removeThread(contactPubkey)
 await store.clearAll()                    // borrar todo el almacén
 
 const stats = await store.getStats()
-// → { totalBytes, threadCount, threads: { [k]: { count, bytes } } }
+// → { totalBytes, threadCount, threads: { [k]: { count, bytes } },
+//     backend: 'indexeddb', usage, quota, persisted }
 ```
 
 ## Garantías
 
 - **Per-thread cap**: 1000 mensajes por defecto, configurable con `setMaxPerThread(n)`. El más antiguo se descarta al añadir uno nuevo si pasa el cap.
-- **Eviction global ante `QuotaExceededError`**: el iframe descarta el 20% más antiguo a través de todos los hilos y reintenta hasta 8 veces.
-- **No sale del navegador**: nunca se hace fetch, no hay servidor, no hay analytics.
+- **Eviction global ante `QuotaExceededError`**: solo como red de seguridad (con IndexedDB es prácticamente inalcanzable). Descarta el 20% más antiguo a través de todos los hilos y reintenta hasta 8 veces.
+- **No sale del navegador**: nunca se hace fetch, no hay servidor, no hay analytics (salvo el sync opcional a tu Drive, off por defecto).
 
 ## Deploy
 
 GitHub Actions despliega a `store.closer.click` cuando cambia algo en `store/`. El bundle del iframe es estático (HTML + JS, sin build).
 
-## Schema en localStorage
+## Schema
+
+IndexedDB `cc-store` → object store `kv` → key `threads.v1`:
 
 ```
-key: cc.store.threads.v1
 value: JSON { [threadKey: string]: ThreadEntry[] }
 ```
 
 Las entradas son objetos opacos para el store; solo se les pide `id` y `ts` para deduplicación y ordenamiento.
+
+## Tests
+
+```bash
+npm install
+npm test        # Playwright: sirve el vault y ejercita los handlers vía postMessage
+                # (IndexedDB real: append/list/dedup, persistencia, migración, stats…)
+```
 
 ## Auto-sync con Google Drive (0.2.0+)
 

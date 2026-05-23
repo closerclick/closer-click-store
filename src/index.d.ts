@@ -23,6 +23,14 @@ export interface StoreStats {
   totalBytes: number
   threadCount: number
   threads: Record<string, ThreadStats>
+  /** Motor de persistencia activo del vault ('indexeddb' salvo fallback). */
+  backend?: 'indexeddb' | 'localStorage'
+  /** Bytes usados por el origen (navigator.storage.estimate), si disponible. */
+  usage?: number | null
+  /** Cuota total del origen en bytes (estimación del navegador), si disponible. */
+  quota?: number | null
+  /** true si el almacenamiento es persistente (no-evictable). */
+  persisted?: boolean | null
 }
 
 export class Store {

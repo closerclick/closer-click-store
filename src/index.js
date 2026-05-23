@@ -2,9 +2,9 @@
  * Cliente de @gatoseya/closer-click-store.
  *
  * Carga un iframe oculto con la página `store.closer.click` y le habla por
- * `postMessage`. El iframe persiste todo en su propio `localStorage`, así
- * varias instancias del messenger (web + extensión + tabs) en el mismo
- * navegador comparten los mismos hilos.
+ * `postMessage`. El iframe persiste todo en su propio `IndexedDB` (cuota grande,
+ * almacenamiento persistente), así varias instancias del messenger (web +
+ * extensión + tabs) en el mismo navegador comparten los mismos hilos.
  */
 
 let singleton = null
