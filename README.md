@@ -1,4 +1,4 @@
-# @gatoseya/closer-click-store
+# @closerclick/closer-click-store
 
 Almacén compartido de hilos de mensajes para el ecosistema [Closer Click](https://github.com/seyacat).
 
@@ -24,7 +24,7 @@ El backend del vault es **IndexedDB** (antes `localStorage`):
 ## API
 
 ```js
-import { Store } from '@gatoseya/closer-click-store'
+import { Store } from '@closerclick/closer-click-store'
 
 const store = await Store.connect()  // singleton — carga el iframe oculto
 
@@ -79,7 +79,7 @@ npm test        # Playwright: sirve el vault y ejercita los handlers vía postMe
 
 ## Auto-sync con Google Drive (0.2.0+)
 
-Backup cifrado y sync multi-dispositivo de los hilos contra `appDataFolder` de Google Drive. Mismo modelo y API que [`@gatoseya/closer-click-identity`](https://github.com/seyacat/closer-click-identity#auto-sync-con-google-drive-080) — los mensajes se cifran con AES-256-GCM (clave derivada por PBKDF2 600 000 iter de la passphrase) antes de subirse, así que Google solo ve bytes opacos.
+Backup cifrado y sync multi-dispositivo de los hilos contra `appDataFolder` de Google Drive. Mismo modelo y API que [`@closerclick/closer-click-identity`](https://github.com/seyacat/closer-click-identity#auto-sync-con-google-drive-080) — los mensajes se cifran con AES-256-GCM (clave derivada por PBKDF2 600 000 iter de la passphrase) antes de subirse, así que Google solo ve bytes opacos.
 
 ```js
 await store.syncConnect(clientId)              // OAuth popup (scope: drive.appdata)

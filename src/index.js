@@ -1,5 +1,5 @@
 /**
- * Cliente de @gatoseya/closer-click-store.
+ * Cliente de @closerclick/closer-click-store.
  *
  * Carga un iframe oculto con la página `store.closer.click` y le habla por
  * `postMessage`. El iframe persiste todo en su propio `IndexedDB` (cuota grande,

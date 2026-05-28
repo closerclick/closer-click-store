@@ -1,5 +1,5 @@
 {
-  "name": "@gatoseya/closer-click-store",
+  "name": "@closerclick/closer-click-store",
   "version": "0.3.0",
   "description": "Almacén compartido de hilos de mensajes para el ecosistema Closer Click (vault iframe + postMessage)",
   "type": "module",
